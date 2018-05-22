@@ -65,6 +65,7 @@ public class PollingThread extends Thread {
   public void addField(String name,SQLType type,Object value) throws Exception {
     checknotalive(); new Field<Object>(staticFields,name,type,value);
   }
+  @SuppressWarnings("unchecked")
   public void addField(String name,SQLType type,Supplier value) throws Exception {
     checknotalive(); new Field<Supplier<Object>>(updatableFields,name,type,(Supplier<Object>)value);
   }
@@ -118,9 +119,8 @@ public class PollingThread extends Thread {
   @Override
   public void run() {
     try { open(); }
-    catch (Exception exc) { logger.warn("Unable to open status file "+path+": "+exc.toString()); return; }
+    catch (Exception exc) { exc.printStackTrace(); logger.warn("Unable to open status file "+path); return; }
     int error = 0;
-    String lasterr;
     boolean ongoing = true;
     while (ongoing) {
       try { sleep(interval); }
@@ -143,18 +143,18 @@ public class PollingThread extends Thread {
             conn.commit();
             continue;
           }
-          else { lasterr = exc.toString(); close(); }
+          else { exc.printStackTrace(); close(); }
         }
       }
       catch (SQLException exc) {
         if (++error<maxerror) {
           close();
           try { open(); continue; }
-          catch (SQLException exc2) { lasterr = exc2.toString(); }
+          catch (SQLException exc2) { exc2.printStackTrace(); }
         }
-        else { lasterr = exc.toString(); }
+        else { exc.printStackTrace(); }
       }
-      logger.warn("Unable to record status in "+path+" (giving up after "+maxerror+" errors): "+lasterr);
+      logger.warn("Unable to record status in "+path+" (giving up after "+maxerror+" errors)");
       return;
     }
     try {
@@ -163,7 +163,7 @@ public class PollingThread extends Thread {
       finally { stmt_final.close(); }
       conn.commit();
     }
-    catch (Exception exc) {}
+    catch (Exception exc) { exc.printStackTrace(); }
     close();
   }
 
