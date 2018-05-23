@@ -1,2 +1,4 @@
 *.jar
+Makefile
 myutil
+doc

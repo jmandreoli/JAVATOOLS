@@ -12,11 +12,18 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import org.apache.log4j.Logger;
 
+/**
+ * Instances of this class are objects which can encapsulate any piece of code.
+ * It starts a separate thread which invokes a set of probes at regular intervals.
+ * The result of the probes are stored in a sqlite3 database.
+ * Only one result is available at a time (a new probe deletes the previous one).
+ * One-shot probes are invoked once at the beginning then never updated.
+ */
 public class PollingThread extends Thread {
 
-  static class Field<T> {
+  static class Probe<T> {
     int index; String name; SQLType type; T value;
-    Field(Stack<Field<T>> l,String name,SQLType type,T value) {
+    Probe(Stack<Probe<T>> l,String name,SQLType type,T value) {
       l.push(this); this.index = l.size();
       this.name = name; this.type = type; this.value=value;
     }
@@ -28,8 +35,8 @@ public class PollingThread extends Thread {
   String path;
   long interval;
   int maxerror;
-  Stack<Field<Object>> staticFields;
-  Stack<Field<Supplier<Object>>> updatableFields;
+  Stack<Probe<Object>> staticProbes;
+  Stack<Probe<Supplier<Object>>> updatableProbes;
   Connection conn;
   String sql_create, sql_init, sql_update, sql_error;
   PreparedStatement stmt_update, stmt_error;
@@ -38,54 +45,95 @@ public class PollingThread extends Thread {
   Supplier<Double> elapsed;
   Logger logger = Logger.getRootLogger();
 
-  public PollingThread (String path) throws Exception { this(path,1.,3); }
-  public PollingThread (String path,double interval) throws Exception { this(path,interval,3); }
+  /**
+   * Constructor of the class. Defaults the <code>interval</code> parameter to <code>1.</code> and <code>maxerror</code> parameter to <code>3</code>.
+   * @see PollingThread(String,double,int)
+   */
+  public PollingThread (String path) throws Exception {
+    this(path,1.,3);
+  }
+  /**
+   * Constructor of the class. Defaults the <code>maxerror</code> parameter to <code>3</code>.
+   * @see PollingThread(String,double,int)
+   */
+  public PollingThread (String path,double interval) throws Exception {
+    this(path,interval,3);
+  }
+  /**
+   * Constructor of the class.
+   * @param path the path to the sqlite database for storing the probe results
+   * @param interval length of interval (in seconds) between two probe campaigns
+   * @param maxerror number of consecutive probe campaigns allowed to fail before giving up the whole polling
+   */
   public PollingThread (String path,double interval,int maxerror) throws Exception {
     super();
     Class.forName("org.sqlite.JDBC");
     this.path = new File(path).getAbsolutePath();
     this.interval = (long) (1000.*interval);
     this.maxerror = maxerror;
-    staticFields = new Stack<>();
-    updatableFields = new Stack<>();
+    staticProbes = new Stack<>();
+    updatableProbes = new Stack<>();
     startTime = System.currentTimeMillis();
     elapsed = ()->(System.currentTimeMillis()-startTime)/1000.;
-    addField("started",JDBCType.TIMESTAMP,startTime);
-    addField("pid",0);
-    addField("elapsed",elapsed);
-    addField("error",JDBCType.VARCHAR,(Supplier<String>)(()->null));
+    addProbe("started",JDBCType.TIMESTAMP,startTime);
+    addProbe("pid",0);
+    addProbe("elapsed",elapsed);
+    addProbe("error",JDBCType.VARCHAR,(Supplier<String>)(()->null));
   }
 
-  public void addField(String name,Object value) throws Exception {
-    addField(name,guesstype(value),value);
+  /**
+   * Declares a one-shot probe to add to the polling thread. Guesses the <code>type</code> parameter from <code>value</code>.
+   * @see addProbe(String,SQLType,Object)
+   */
+  public void addProbe(String name,Object value) throws Exception {
+    addProbe(name,guesstype(value),value);
   }
-  public void addField(String name,Supplier value) throws Exception {
-    addField(name,guesstype(value.get()),value);
+  /**
+   * Declares a probe to add to the polling thread. Guesses the <code>type</code> parameter from a call to <code>value</code>.
+   * @see addProbe(String,SQLType,Supplier)
+   */
+  public void addProbe(String name,Supplier value) throws Exception {
+    addProbe(name,guesstype(value.get()),value);
   }
-  public void addField(String name,SQLType type,Object value) throws Exception {
-    checknotalive(); new Field<Object>(staticFields,name,type,value);
+  /**
+   * Declares a one-shot probe to add to the polling thread.
+   * @param name name of the probe, used as column name in the sqlite database holding the results
+   * @param type SQL type of the column
+   * @param value value to store at the (unique) invocation of the probe
+   */
+  public void addProbe(String name,SQLType type,Object value) throws Exception {
+    checknotalive(); new Probe<Object>(staticProbes,name,type,value);
   }
+  /**
+   * Declares a probe to add to the polling thread.
+   * @param name name of the probe, used as column name in the sqlite database holding the results
+   * @param type SQL type of the column
+   * @param value supplier of the value to store, invoked at each interval
+   */
   @SuppressWarnings("unchecked")
-  public void addField(String name,SQLType type,Supplier value) throws Exception {
-    checknotalive(); new Field<Supplier<Object>>(updatableFields,name,type,(Supplier<Object>)value);
+  public void addProbe(String name,SQLType type,Supplier value) throws Exception {
+    checknotalive(); new Probe<Supplier<Object>>(updatableProbes,name,type,(Supplier<Object>)value);
   }
   void checknotalive() throws Exception {
-    if (isAlive()) { throw new Exception("Attempt to add a field to a live polling thread"); }
+    if (isAlive()) { throw new Exception("Attempt to add a probe to a live polling thread"); }
   }
 
+  /**
+   * Starts the polling thread. Must be called just before the piece of code block to poll, normally encapsulated in a <code>try ... finally</code> construct.
+   */
   public void finalise_and_start() throws Exception {
     Stack<String> sql_create_ = new Stack<>();
-    for (Field<Object> f: staticFields) { sql_create_.push(f.name+" "+f.type.getName()); }
-    for (Field<Supplier<Object>> f: updatableFields) { sql_create_.push(f.name+" "+f.type.getName()); }
+    for (Probe<Object> f: staticProbes) { sql_create_.push(f.name+" "+f.type.getName()); }
+    for (Probe<Supplier<Object>> f: updatableProbes) { sql_create_.push(f.name+" "+f.type.getName()); }
     sql_create = "CREATE TABLE Status ("+String.join(", ",sql_create_)+")";
     Stack<String> sql_init_1 = new Stack<>(); Stack<String> sql_init_2 = new Stack<String>();
-    for (Field<Object> f: staticFields) { sql_init_1.push(f.name); sql_init_2.push("?"); }
+    for (Probe<Object> f: staticProbes) { sql_init_1.push(f.name); sql_init_2.push("?"); }
     sql_init = "INSERT INTO Status ("+String.join(",",sql_init_1)+") VALUES ("+String.join(",",sql_init_2)+")";
     Stack<String> sql_update_ = new Stack<>();
-    for (Field<Supplier<Object>> f: updatableFields) { sql_update_.push(f.name+"=?"); }
+    for (Probe<Supplier<Object>> f: updatableProbes) { sql_update_.push(f.name+"=?"); }
     sql_update = "UPDATE Status SET "+String.join(",",sql_update_);
     Stack<String> sql_error_ = new Stack<>();
-    for (Field<Supplier<Object>> f: updatableFields) { if (!f.name.equals("error")&&!f.name.equals("elapsed")) { sql_update_.push(f.name+"=NULL"); } }
+    for (Probe<Supplier<Object>> f: updatableProbes) { if (!f.name.equals("error")&&!f.name.equals("elapsed")) { sql_update_.push(f.name+"=NULL"); } }
     sql_error = "UPDATE Status SET elapsed=?, error=?"+String.join(",",sql_error_);
     start();
   }
@@ -100,7 +148,7 @@ public class PollingThread extends Thread {
       finally { stmt_create.close(); }
       PreparedStatement stmt_init = conn.prepareStatement(sql_init);
       try {
-        for (Field<Object> f: staticFields) { stmt_init.setObject(f.index,f.value); }
+        for (Probe<Object> f: staticProbes) { stmt_init.setObject(f.index,f.value); }
         stmt_init.execute();
       }
       finally { stmt_init.close(); }
@@ -128,7 +176,7 @@ public class PollingThread extends Thread {
       ongoing = !stopRequested;
       try {
         try {
-          for (Field<Supplier<Object>> f: updatableFields) { stmt_update.setObject(f.index,f.value.get()); }
+          for (Probe<Supplier<Object>> f: updatableProbes) { stmt_update.setObject(f.index,f.value.get()); }
           stmt_update.execute();
           conn.commit();
           error = 0;
@@ -167,6 +215,9 @@ public class PollingThread extends Thread {
     close();
   }
 
+  /**
+   * Ends the polling thread. Must be called just after the code block to poll, preferably in the <code>finally</code> clause encapsulating it.
+   */
   synchronized public void shutdown() throws Exception { stopRequested = true; join(); }
 
 }
