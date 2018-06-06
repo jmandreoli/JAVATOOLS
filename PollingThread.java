@@ -2,6 +2,7 @@ package myutil;
 import java.util.Stack;
 import java.util.function.Supplier;
 import java.io.File;
+import java.lang.management.ManagementFactory;
 import java.sql.DriverManager;
 import java.sql.Connection;
 import java.sql.Statement;
@@ -76,7 +77,7 @@ public class PollingThread extends Thread {
     startTime = System.currentTimeMillis();
     elapsed = ()->(System.currentTimeMillis()-startTime)/1000.;
     addProbe("started",JDBCType.TIMESTAMP,startTime);
-    addProbe("pid",0);
+    addProbe("pid",ManagementFactory.getRuntimeMXBean().getName());
     addProbe("elapsed",elapsed);
     addProbe("error",JDBCType.VARCHAR,(Supplier<String>)(()->null));
   }
