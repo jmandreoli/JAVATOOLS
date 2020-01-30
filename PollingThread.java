@@ -134,8 +134,9 @@ public class PollingThread extends Thread {
     for (Probe<Supplier<Object>> f: updatableProbes) { sql_update_.push(f.name+"=?"); }
     sql_update = "UPDATE Status SET "+String.join(",",sql_update_);
     Stack<String> sql_error_ = new Stack<>();
-    for (Probe<Supplier<Object>> f: updatableProbes) { if (!f.name.equals("error")&&!f.name.equals("elapsed")) { sql_update_.push(f.name+"=NULL"); } }
-    sql_error = "UPDATE Status SET elapsed=?, error=?"+String.join(",",sql_error_);
+    sql_error_.push("elapsed=?, error=?");
+    for (Probe<Supplier<Object>> f: updatableProbes) { if (!f.name.equals("error")&&!f.name.equals("elapsed")) { sql_error_.push(f.name+"=NULL"); } }
+    sql_error = "UPDATE Status SET "+String.join(",",sql_error_);
     start();
   }
 
